@@ -37,7 +37,7 @@ var import_child_process = require("child_process");
 var path = __toESM(require("path"));
 var import_fs = require("fs");
 var DEFAULT_SETTINGS = {
-  extensions: [".docx", ".doc", ".rtf", ".odt", ".xlsx", ".xls"],
+  extensions: [".docx", ".doc", ".rtf", ".odt", ".xlsx", ".xls", ".txt"],
   deleteOriginal: false,
   pandocPath: "",
   convertExisting: false,
@@ -124,12 +124,12 @@ var AutoConvertPlugin = class extends import_obsidian.Plugin {
    * Handle a newly created file in the vault
    */
   async handleNewFile(file) {
-    if (!this.pandocAvailable)
-      return;
-    if (this.processingFiles.has(file.path))
-      return;
     const ext = path.extname(file.path).toLowerCase();
     if (!this.settings.extensions.contains(ext))
+      return;
+    if (![".txt", ".xlsx", ".xls"].includes(ext) && !this.pandocAvailable)
+      return;
+    if (this.processingFiles.has(file.path))
       return;
     const basename = path.basename(file.path);
     if (basename.startsWith("~$"))
@@ -160,6 +160,17 @@ var AutoConvertPlugin = class extends import_obsidian.Plugin {
       if (ext === ".xlsx" || ext === ".xls") {
         const markdown = await this.excelToMarkdown(file);
         import_fs.writeFileSync(absOutputPath, markdown, "utf-8");
+        const mdFile = this.app.vault.getAbstractFileByPath(mdPath);
+        if (mdFile instanceof import_obsidian.TFile) {
+          await this.app.vault.read(mdFile);
+        }
+        new import_obsidian.Notice(`自动转换：${path.basename(file.path)} → ${path.basename(mdPath)} 转换成功`);
+        console.log(`Auto Convert: Successfully converted ${file.path} → ${mdPath}`);
+        return true;
+      }
+      if (ext === ".txt") {
+        const content = await this.app.vault.read(file);
+        import_fs.writeFileSync(absOutputPath, content, "utf-8");
         const mdFile = this.app.vault.getAbstractFileByPath(mdPath);
         if (mdFile instanceof import_obsidian.TFile) {
           await this.app.vault.read(mdFile);
@@ -308,14 +319,14 @@ ${stderr}`));
    * Batch convert all matching files in vault
    */
   async batchConvert() {
-    if (!this.pandocAvailable) {
-      new import_obsidian.Notice("自动转换：Pandoc 不可用，请先安装 Pandoc。");
-      return;
-    }
     const files = this.app.vault.getFiles();
     const candidates = files.filter((f) => {
       const ext = path.extname(f.path).toLowerCase();
-      return this.settings.extensions.contains(ext) && !this.isExcluded(f.path);
+      if (!this.settings.extensions.contains(ext) || this.isExcluded(f.path))
+        return false;
+      if (![".txt", ".xlsx", ".xls"].includes(ext) && !this.pandocAvailable)
+        return false;
+      return true;
     });
     if (candidates.length === 0) {
       new import_obsidian.Notice("自动转换：没有需要转换的文件。");
