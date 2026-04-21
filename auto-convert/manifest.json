@@ -1,0 +1,9 @@
+{
+	"id": "auto-convert",
+	"name": "自动转换doc",
+	"version": "1.1.0",
+	"minAppVersion": "1.0.0",
+	"description": "使用 Pandoc 自动将 Word (.docx/.doc)、Excel (.xlsx/.xls)、RTF 等文档转换为 Markdown 格式。",
+	"author": "魏超",
+	"isDesktopOnly": true
+}
