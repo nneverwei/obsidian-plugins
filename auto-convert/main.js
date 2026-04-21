@@ -35,7 +35,6 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_child_process = require("child_process");
 var path = __toESM(require("path"));
-var import_xlsx = require("./xlsx.full.min.js");
 var import_fs = require("fs");
 var DEFAULT_SETTINGS = {
   extensions: [".docx", ".doc", ".rtf", ".odt", ".xlsx", ".xls"],
@@ -50,6 +49,7 @@ var AutoConvertPlugin = class extends import_obsidian.Plugin {
     this.settings = DEFAULT_SETTINGS;
     this.pandocAvailable = false;
     this.processingFiles = /* @__PURE__ */ new Set();
+    this._xlsx = null;
   }
   async onload() {
     await this.loadSettings();
@@ -131,6 +131,9 @@ var AutoConvertPlugin = class extends import_obsidian.Plugin {
     const ext = path.extname(file.path).toLowerCase();
     if (!this.settings.extensions.contains(ext))
       return;
+    const basename = path.basename(file.path);
+    if (basename.startsWith("~$"))
+      return;
     if (this.isExcluded(file.path))
       return;
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -155,7 +158,7 @@ var AutoConvertPlugin = class extends import_obsidian.Plugin {
       const absOutputPath = adapter.getFullPath(mdPath);
       const ext = path.extname(file.path).toLowerCase();
       if (ext === ".xlsx" || ext === ".xls") {
-        const markdown = this.excelToMarkdown(absInputPath);
+        const markdown = await this.excelToMarkdown(file);
         import_fs.writeFileSync(absOutputPath, markdown, "utf-8");
         const mdFile = this.app.vault.getAbstractFileByPath(mdPath);
         if (mdFile instanceof import_obsidian.TFile) {
@@ -226,11 +229,24 @@ ${stderr}`));
     };
     return formatMap[ext] || "docx";
   }
+  getXlsx() {
+    if (!this._xlsx) {
+      const xlsxPath = this.app.vault.adapter.getFullPath(
+        `.obsidian/plugins/${this.manifest.id}/xlsx.full.min.js`
+      );
+      const code = import_fs.readFileSync(xlsxPath, "utf-8");
+      const fn = new Function("exports", "module", "define", code + "\nreturn XLSX;");
+      this._xlsx = fn(undefined, undefined, undefined);
+    }
+    return this._xlsx;
+  }
   /**
    * Convert Excel file (.xls/.xlsx) to markdown using SheetJS
    */
-  excelToMarkdown(absInputPath) {
-    const workbook = import_xlsx.readFile(absInputPath);
+  async excelToMarkdown(file) {
+    const XLSX = this.getXlsx();
+    const data = await this.app.vault.adapter.readBinary(file.path);
+    const workbook = XLSX.read(data, { type: "array" });
     const sheetNames = workbook.SheetNames;
     const parts = [];
     for (let i = 0; i < sheetNames.length; i++) {
@@ -248,14 +264,15 @@ ${stderr}`));
    * Convert a single worksheet to a markdown pipe table
    */
   sheetToMarkdownTable(sheet) {
-    const range = import_xlsx.utils.decode_range(sheet["!ref"]);
+    const XLSX = this.getXlsx();
+    const range = XLSX.utils.decode_range(sheet["!ref"]);
     const merges = sheet["!merges"] || [];
     const mergeMap = {};
     for (const m of merges) {
-      const src = import_xlsx.utils.encode_cell(m.s);
+      const src = XLSX.utils.encode_cell(m.s);
       for (let r = m.s.r; r <= m.e.r; r++) {
         for (let c = m.s.c; c <= m.e.c; c++) {
-          mergeMap[import_xlsx.utils.encode_cell({ r, c })] = src;
+          mergeMap[XLSX.utils.encode_cell({ r, c })] = src;
         }
       }
     }
@@ -263,16 +280,16 @@ ${stderr}`));
     for (let r = range.s.r; r <= range.e.r; r++) {
       const row = [];
       for (let c = range.s.c; c <= range.e.c; c++) {
-        const addr = import_xlsx.utils.encode_cell({ r, c });
+        const addr = XLSX.utils.encode_cell({ r, c });
         let val = "";
         const cell = sheet[addr];
         if (cell) {
-          val = import_xlsx.utils.format_cell(cell);
+          val = XLSX.utils.format_cell(cell);
         } else if (mergeMap[addr]) {
           const src = sheet[mergeMap[addr]];
-          if (src) val = import_xlsx.utils.format_cell(src);
+          if (src) val = XLSX.utils.format_cell(src);
         }
-        row.push(val.replace(/\|/g, "\\|"));
+        row.push(val.replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>"));
       }
       rows.push(row);
     }
