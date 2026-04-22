@@ -1,12 +1,9 @@
-name: Release auto-convert plugin
+name: Release tagged version
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'auto-convert/**'
-      - '.github/workflows/release-auto-convert.yml'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -32,17 +29,11 @@ jobs:
           zip -r ../auto-convert-${{ steps.version.outputs.version }}.zip . \
             -x ".claude/*" ".DS_Store"
 
-      - name: Delete old rolling release if exists
+      - name: Create GitHub release
         run: |
-          gh release delete auto-convert-latest -y --cleanup-tag || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create rolling release
-        run: |
-          gh release create auto-convert-latest \
+          gh release create "${GITHUB_REF_NAME}" \
             "auto-convert-${{ steps.version.outputs.version }}.zip" \
-            --title "auto-convert latest" \
-            --notes "Auto-built from main branch. Current plugin version: ${{ steps.version.outputs.version }}"
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Release for auto-convert version ${{ steps.version.outputs.version }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
