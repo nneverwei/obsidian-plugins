@@ -36,6 +36,8 @@ var import_obsidian = require("obsidian");
 var import_child_process = require("child_process");
 var path = __toESM(require("path"));
 var import_fs = require("fs");
+var import_os = require("os");
+var import_path = __toESM(require("path"));
 var DEFAULT_SETTINGS = {
   extensions: [".docx", ".doc", ".rtf", ".odt", ".xlsx", ".xls", ".txt"],
   deleteOriginal: false,
@@ -132,7 +134,7 @@ var AutoConvertPlugin = class extends import_obsidian.Plugin {
     if (this.processingFiles.has(file.path))
       return;
     const basename = path.basename(file.path);
-    if (basename.startsWith("~$"))
+    if (basename.startsWith("~$") || basename.includes("__conv_temp__"))
       return;
     if (this.isExcluded(file.path))
       return;
@@ -179,19 +181,41 @@ var AutoConvertPlugin = class extends import_obsidian.Plugin {
         console.log(`Auto Convert: Successfully converted ${file.path} → ${mdPath}`);
         return true;
       }
+      let absPandocInput = absInputPath;
+      if (ext === ".docx") {
+        const buf = import_fs.readFileSync(absInputPath);
+        if (buf.length >= 4 && buf[0] === 208 && buf[1] === 207 && buf[2] === 17 && buf[3] === 224) {
+          const tmpDocx = absInputPath.replace(/\.[^.]+$/, ".__conv_temp__.docx");
+          const result = await this.convertDocViaCOM(absInputPath, tmpDocx);
+          if (!result) {
+            throw new Error("该文件实际上是旧版 .doc 格式（Word 97-2003），且未检测到本机安装 Word 或 WPS，无法自动转换。请手动用 Word 或 WPS 另存为 .docx 后再试。");
+          }
+          absPandocInput = tmpDocx;
+          this._tempDocxToClean = tmpDocx;
+        }
+      } else if (ext === ".doc") {
+        const tmpDocx = absInputPath.replace(/\.[^.]+$/, ".__conv_temp__.docx");
+        const result = await this.convertDocViaCOM(absInputPath, tmpDocx);
+        if (!result) {
+          throw new Error("未检测到本机安装 Word 或 WPS，无法转换 .doc 文件。请手动另存为 .docx 后再试。");
+        }
+        absPandocInput = tmpDocx;
+        this._tempDocxToClean = tmpDocx;
+      }
       const pandocCmd = this.settings.pandocPath || "pandoc";
+      const format = this.getSourceFormat(ext === ".doc" ? ".docx" : ext);
       await new Promise((resolve, reject) => {
         (0, import_child_process.execFile)(
           pandocCmd,
           [
             "-f",
-            this.getSourceFormat(path.extname(file.path).toLowerCase()),
+            format,
             "-t",
             "markdown",
             "--wrap=none",
             "-o",
             absOutputPath,
-            absInputPath
+            absPandocInput
           ],
           { timeout: 6e4, maxBuffer: 10 * 1024 * 1024 },
           (error, stdout, stderr) => {
@@ -204,6 +228,10 @@ ${stderr}`));
           }
         );
       });
+      if (this._tempDocxToClean) {
+        try { import_fs.unlinkSync(this._tempDocxToClean); } catch (_) {}
+        this._tempDocxToClean = null;
+      }
       const mdFile = this.app.vault.getAbstractFileByPath(mdPath);
       if (mdFile instanceof import_obsidian.TFile) {
         await this.app.vault.read(mdFile);
@@ -217,7 +245,57 @@ ${stderr}`));
       console.error(`Auto Convert: Conversion failed for ${file.path}:`, msg);
       return false;
     } finally {
+      if (this._tempDocxToClean) {
+        try { import_fs.unlinkSync(this._tempDocxToClean); } catch (_) {}
+        this._tempDocxToClean = null;
+      }
       this.processingFiles.delete(file.path);
+    }
+  }
+  /**
+   * Convert .doc to .docx via Word/WPS COM automation
+   */
+  async convertDocViaCOM(inputPath, outputPath) {
+    const comIds = ["Word.Application", "KWps.Application", "WPS.Application"];
+    const psScript = `
+param($InputPath, $OutputPath, $ComId)
+try {
+  $app = New-Object -ComObject $ComId
+  $app.Visible = $false
+  $app.DisplayAlerts = 0
+  $doc = $app.Documents.Open($InputPath)
+  $doc.SaveAs2([ref]$OutputPath, [ref]16)
+  $doc.Close($false)
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($doc) | Out-Null
+  $app.Quit()
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($app) | Out-Null
+  exit 0
+} catch {
+  Write-Error $_.Exception.Message
+  exit 1
+}`;
+    const scriptPath = import_path.join(import_os.tmpdir(), "auto_convert_doc2docx.ps1");
+    import_fs.writeFileSync(scriptPath, psScript, "utf-8");
+    try {
+      for (const comId of comIds) {
+        try {
+          await new Promise((resolve, reject) => {
+            (0, import_child_process.execFile)(
+              "powershell",
+              ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath, inputPath, outputPath, comId],
+              { timeout: 12e4 },
+              (error) => { if (error) reject(error); else resolve(); }
+            );
+          });
+          console.log(`Auto Convert: COM conversion via ${comId} succeeded for ${inputPath}`);
+          return true;
+        } catch (_) {
+          continue;
+        }
+      }
+      return false;
+    } finally {
+      try { import_fs.unlinkSync(scriptPath); } catch (_) {}
     }
   }
   /**
@@ -321,6 +399,8 @@ ${stderr}`));
   async batchConvert() {
     const files = this.app.vault.getFiles();
     const candidates = files.filter((f) => {
+      if (path.basename(f.path).includes("__conv_temp__"))
+        return false;
       const ext = path.extname(f.path).toLowerCase();
       if (!this.settings.extensions.contains(ext) || this.isExcluded(f.path))
         return false;
