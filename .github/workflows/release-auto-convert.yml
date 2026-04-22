@@ -1,0 +1,48 @@
+name: Release auto-convert plugin
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'auto-convert/**'
+      - '.github/workflows/release-auto-convert.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version from manifest.json
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' auto-convert/manifest.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create zip package
+        run: |
+          cd auto-convert
+          zip -r ../auto-convert-${{ steps.version.outputs.version }}.zip . \
+            -x ".claude/*" ".DS_Store"
+
+      - name: Delete old rolling release if exists
+        run: |
+          gh release delete auto-convert-latest -y --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create rolling release
+        run: |
+          gh release create auto-convert-latest \
+            "auto-convert-${{ steps.version.outputs.version }}.zip" \
+            --title "auto-convert latest" \
+            --notes "Auto-built from main branch. Current plugin version: ${{ steps.version.outputs.version }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
